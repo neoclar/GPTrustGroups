@@ -3,6 +3,7 @@ package com.neoclar.gptrustgroups.listeners;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.bukkit.Bukkit;
@@ -36,10 +37,32 @@ public class TrustCommandInterceptor implements Listener {
     private record TrustCommand(String name, ClaimPermission permission, String levelKey) {}
     private static final List<TrustCommand> COMMANDS = List.of(
             new TrustCommand("trust", ClaimPermission.Build, "Build"),
-            new TrustCommand("containertrust", ClaimPermission.Inventory, "Containers"),
+            new TrustCommand("containertrust", containerPermission(), "Containers"),
             new TrustCommand("accesstrust", ClaimPermission.Access, "Access"),
             new TrustCommand("permissiontrust", ClaimPermission.Manage, "Manage")
     );
+    // Алиасы из plugin.yml GriefPrevention
+    private static final Map<String, String> ALIASES = Map.of(
+            "tr", "trust",
+            "ct", "containertrust",
+            "at", "accesstrust",
+            "pt", "permissiontrust",
+            "managetrust", "permissiontrust",
+            "ut", "untrust"
+    );
+
+    /** "/GriefPrevention:ct" → "containertrust" */
+    private static String normalizeCommand(String raw) {
+        String cmd = raw.toLowerCase();
+        if (cmd.startsWith("griefprevention:")) cmd = cmd.substring("griefprevention:".length());
+        return ALIASES.getOrDefault(cmd, cmd);
+    }
+
+    /** В новых GP Inventory переименован в Container; Inventory оставлен как псевдоним и будет удалён. */
+    private static ClaimPermission containerPermission() {
+        try { return ClaimPermission.valueOf("Container"); }
+        catch (IllegalArgumentException e) { return ClaimPermission.valueOf("Inventory"); }
+    }
 
     public TrustCommandInterceptor(GPTrustGroups plugin) {
         this.plugin = plugin;
@@ -55,7 +78,7 @@ public class TrustCommandInterceptor implements Listener {
         String[] parts = message.substring(1).split("\\s+", 3);
         if (parts.length < 1) return;
 
-        String cmd = parts[0].toLowerCase();
+        String cmd = normalizeCommand(parts[0]);
 
         if (cmd.equals("trustlist") || cmd.equals("trustlistall")) {
             event.setCancelled(true);
@@ -102,15 +125,17 @@ public class TrustCommandInterceptor implements Listener {
                 send(player, TextMode.Err, messages.get("Trust.ManagersOwnerOnly"));
                 return;
             }
+            // Ищем группу во всех списках привата, без switch по ClaimPermission (Inventory → Container в новых GP)
             boolean removed = false;
-            for (TrustCommand tc : COMMANDS) {
-                if (removePermission(claim, groupId, tc.permission())) removed = true;
+            for (int i = 0; i < 4; i++) {
+                if (getList(claim, i).contains(groupId)) removed = true;
             }
             if (removed) {
+                claim.setPermission(groupId, null);
                 GriefPrevention.instance.dataStore.saveClaim(claim);
                 send(player, TextMode.Success, messages.format("Trust.GroupRevoked", groupName));
             } else {
-                send(player, TextMode.Warn, messages.format("Trust.GroupNotHad", groupName));
+                send(player, TextMode.Warn, messages.format("Trust.NotHad", groupName));
             }
             return;
         }
@@ -227,7 +252,7 @@ public void onTabComplete(TabCompleteEvent event) {
 
     String withoutSlash = buffer.substring(1);
     String[] parts = withoutSlash.split("\\s+", 2);
-    String cmd = parts[0].toLowerCase();
+    String cmd = normalizeCommand(parts[0]);
 
     boolean isTrustCmd = cmd.equals("trust") || cmd.equals("containertrust")
             || cmd.equals("accesstrust") || cmd.equals("permissiontrust")
@@ -254,19 +279,6 @@ public void onTabComplete(TabCompleteEvent event) {
 private void send(Player player, ChatColor color, String message) {
     player.sendMessage(color + message);
 }
-
-    private boolean removePermission(Claim claim, String id, ClaimPermission level) {
-        List<String> targetList = switch (level) {
-            case Build -> getList(claim, 0);
-            case Inventory -> getList(claim, 1);
-            case Access -> getList(claim, 2);
-            case Manage -> getList(claim, 3);
-            default -> null;
-        };
-        if (targetList == null || !targetList.contains(id)) return false;
-        claim.setPermission(id, null);
-        return true;
-    }
 
     private List<String> getList(Claim claim, int index) {
         var b = new ArrayList<String>();
